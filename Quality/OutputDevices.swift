@@ -15,6 +15,7 @@ class OutputDevices: ObservableObject {
     @Published var defaultOutputDevice: AudioDevice?
     @Published var outputDevices = [AudioDevice]()
     @Published var currentSampleRate: Float64?
+    @Published var currentBitDepth: UInt32?
     
     private var enableBitDepthDetection = Defaults.shared.userPreferBitDepthDetection
     private var enableBitDepthDetectionCancellable: AnyCancellable?
@@ -128,16 +129,15 @@ class OutputDevices: ObservableObject {
             let coreAudioLogs = try Console.getRecentEntries(type: .coreAudio)
             let coreMediaLogs = try Console.getRecentEntries(type: .coreMedia)
             
-            allStats.append(contentsOf: CMPlayerParser.parseMusicConsoleLogs(musicLogs))
-            if enableBitDepthDetection {
-                allStats.append(contentsOf: CMPlayerParser.parseCoreAudioConsoleLogs(coreAudioLogs))
-            }
-            else {
-                allStats.append(contentsOf: CMPlayerParser.parseCoreMediaConsoleLogs(coreMediaLogs))
-            }
-
-            allStats.sort(by: {$0.priority > $1.priority})
-            print("[getAllStats] \(allStats)")
+            // Use the new combined parser that handles all sources
+            allStats = CMPlayerParser.parseAllSources(
+                musicLogs: musicLogs,
+                coreAudioLogs: coreAudioLogs,
+                coreMediaLogs: coreMediaLogs,
+                enableBitDepthDetection: enableBitDepthDetection
+            )
+            
+            print("[getAllStats] Found \(allStats.count) stats: \(allStats)")
         }
         catch {
             print("[getAllStats, error] \(error)")
@@ -150,125 +150,207 @@ class OutputDevices: ObservableObject {
         let allStats = self.getAllStats()
         let defaultDevice = self.selectedOutputDevice ?? self.defaultOutputDevice
         
-        if let first = allStats.first, let supported = defaultDevice?.nominalSampleRates {
+        guard let device = defaultDevice else {
+            print("[switchLatestSampleRate] No output device available")
+            return
+        }
+        
+        guard let supported = device.nominalSampleRates, !supported.isEmpty else {
+            print("[switchLatestSampleRate] Device has no supported sample rates")
+            return
+        }
+        
+        if let first = allStats.first {
             let sampleRate = Float64(first.sampleRate)
             let bitDepth = Int32(first.bitDepth)
             
-            if self.currentTrack == self.previousTrack, let prevSampleRate = currentSampleRate, prevSampleRate > sampleRate {
-                print("same track, prev sample rate is higher")
+            print("[switchLatestSampleRate] Best stat: \(first), Target: \(sampleRate) Hz, \(bitDepth)-bit")
+            
+            if self.currentTrack == self.previousTrack, let prevSampleRate = currentSampleRate, prevSampleRate * 1000 > sampleRate {
+                print("[switchLatestSampleRate] Same track, previous sample rate is higher - skipping")
                 return
             }
             
-            if sampleRate == 48000 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            // Retry logic for 48kHz detection (often indicates pending real rate)
+            if sampleRate == 48000 && !recursion {
+                print("[switchLatestSampleRate] Detected 48kHz, retrying to get actual rate...")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                     self.switchLatestSampleRate(recursion: true)
                 }
+                return
             }
             
-            let formats = self.getFormats(bestStat: first, device: defaultDevice!)!
+            guard let formats = self.getFormats(bestStat: first, device: device), !formats.isEmpty else {
+                print("[switchLatestSampleRate] No available formats for device")
+                // Fall back to just setting sample rate without bit depth
+                if let nearest = supported.min(by: { abs($0 - sampleRate) < abs($1 - sampleRate) }) {
+                    print("[switchLatestSampleRate] Falling back to sample rate only: \(nearest) Hz")
+                    if nearest != previousSampleRate {
+                        device.setNominalSampleRate(nearest)
+                    }
+                    self.updateSampleRate(nearest)
+                }
+                return
+            }
             
-            // https://stackoverflow.com/a/65060134
-            let nearest = supported.min(by: {
-                abs($0 - sampleRate) < abs($1 - sampleRate)
-            })
+            // Find nearest supported sample rate
+            guard let nearest = supported.min(by: { abs($0 - sampleRate) < abs($1 - sampleRate) }) else {
+                print("[switchLatestSampleRate] Could not find nearest sample rate")
+                return
+            }
             
-            let nearestBitDepth = formats.min(by: {
+            print("[switchLatestSampleRate] Nearest supported sample rate: \(nearest) Hz")
+            
+            // Find formats matching the nearest sample rate
+            let formatsAtSampleRate = formats.filter { $0.mSampleRate == nearest }
+            
+            if formatsAtSampleRate.isEmpty {
+                print("[switchLatestSampleRate] No formats at target sample rate, using sample rate only")
+                if nearest != previousSampleRate {
+                    device.setNominalSampleRate(nearest)
+                }
+                self.updateSampleRate(nearest)
+                return
+            }
+            
+            // Find the best matching bit depth
+            let nearestBitDepthFormat = formatsAtSampleRate.min(by: {
                 abs(Int32($0.mBitsPerChannel) - bitDepth) < abs(Int32($1.mBitsPerChannel) - bitDepth)
             })
             
-            let nearestFormat = formats.filter({
-                $0.mSampleRate == nearest && $0.mBitsPerChannel == nearestBitDepth?.mBitsPerChannel
-            })
+            // Find formats matching both sample rate and bit depth
+            let nearestFormat = formatsAtSampleRate.filter {
+                $0.mBitsPerChannel == nearestBitDepthFormat?.mBitsPerChannel
+            }
             
-            print("NEAREST FORMAT \(nearestFormat)")
+            print("[switchLatestSampleRate] Matching formats: \(nearestFormat.map { "(\($0.mSampleRate)Hz, \($0.mBitsPerChannel)bit)" })")
             
             if let suitableFormat = nearestFormat.first {
+                print("[switchLatestSampleRate] Selected format: \(suitableFormat.mSampleRate) Hz, \(suitableFormat.mBitsPerChannel)-bit")
+                
                 if enableBitDepthDetection {
-                    self.setFormats(device: defaultDevice, format: suitableFormat)
+                    self.setFormats(device: device, format: suitableFormat)
                 }
-                else if suitableFormat.mSampleRate != previousSampleRate { // bit depth disabled
-                    defaultDevice?.setNominalSampleRate(suitableFormat.mSampleRate)
+                else if suitableFormat.mSampleRate != previousSampleRate {
+                    device.setNominalSampleRate(suitableFormat.mSampleRate)
                 }
-                self.updateSampleRate(suitableFormat.mSampleRate)
+                
+                self.updateSampleRate(suitableFormat.mSampleRate, bitDepth: suitableFormat.mBitsPerChannel)
+                
                 if let currentTrack = currentTrack {
                     self.trackAndSample[currentTrack] = suitableFormat.mSampleRate
                 }
+            } else {
+                print("[switchLatestSampleRate] No suitable format found, using sample rate only")
+                if nearest != previousSampleRate {
+                    device.setNominalSampleRate(nearest)
+                }
+                self.updateSampleRate(nearest, bitDepth: UInt32(bitDepth))
             }
-
-//            if let nearest = nearest {
-//                let nearestSampleRate = nearest.element
-//                if nearestSampleRate != previousSampleRate {
-//                    defaultDevice?.setNominalSampleRate(nearestSampleRate)
-//                    self.updateSampleRate(nearestSampleRate)
-//                    if let currentTrack = currentTrack {
-//                        self.trackAndSample[currentTrack] = nearestSampleRate
-//                    }
-//                }
-//            }
         }
         else if !recursion {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+            print("[switchLatestSampleRate] No stats found, retrying...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                 self.switchLatestSampleRate(recursion: true)
             }
         }
         else {
-//                print("cache \(self.trackAndSample)")
+            print("[switchLatestSampleRate] No stats found after retry")
             if self.currentTrack == self.previousTrack {
-                print("same track, ignore cache")
+                print("[switchLatestSampleRate] Same track, ignoring cache")
                 return
             }
-//            if let currentTrack = currentTrack, let cachedSampleRate = trackAndSample[currentTrack] {
-//                print("using cached data")
-//                if cachedSampleRate != previousSampleRate {
-//                    defaultDevice?.setNominalSampleRate(cachedSampleRate)
-//                    self.updateSampleRate(cachedSampleRate)
-//                }
-//            }
         }
-
     }
     
     func getFormats(bestStat: CMPlayerStats, device: AudioDevice) -> [AudioStreamBasicDescription]? {
         // new sample rate + bit depth detection route
         let streams = device.streams(scope: .output)
-        let availableFormats = streams?.first?.availablePhysicalFormats?.compactMap({$0.mFormat})
+        guard let availableFormats = streams?.first?.availablePhysicalFormats?.compactMap({ $0.mFormat }), !availableFormats.isEmpty else {
+            print("[getFormats] No physical formats available for device: \(device.name)")
+            return nil
+        }
+        print("[getFormats] Available formats for \(device.name): \(availableFormats.map { "(\($0.mSampleRate)Hz, \($0.mBitsPerChannel)bit)" })")
         return availableFormats
     }
     
     func setFormats(device: AudioDevice?, format: AudioStreamBasicDescription?) {
-        guard let device, let format else { return }
+        guard let device = device, let format = format else {
+            print("[setFormats] Device or format is nil")
+            return
+        }
+        
         let streams = device.streams(scope: .output)
-        if streams?.first?.physicalFormat != format {
-            streams?.first?.physicalFormat = format
+        guard let stream = streams?.first else {
+            print("[setFormats] No output streams found for device: \(device.name)")
+            return
+        }
+        
+        let currentFormat = stream.physicalFormat
+        
+        // Check if we actually need to change the format
+        if let current = currentFormat, current == format {
+            print("[setFormats] Format already set to \(format.mSampleRate) Hz, \(format.mBitsPerChannel)-bit")
+            return
+        }
+        
+        print("[setFormats] Changing format from \(currentFormat?.mSampleRate ?? 0) Hz, \(currentFormat?.mBitsPerChannel ?? 0)-bit to \(format.mSampleRate) Hz, \(format.mBitsPerChannel)-bit")
+        
+        // Set the physical format
+        stream.physicalFormat = format
+        
+        // Verify the change was applied
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            if let newFormat = stream.physicalFormat {
+                if newFormat == format {
+                    print("[setFormats] Format successfully changed to \(newFormat.mSampleRate) Hz, \(newFormat.mBitsPerChannel)-bit")
+                } else {
+                    print("[setFormats] Warning: Format change may not have been applied. Current: \(newFormat.mSampleRate) Hz, \(newFormat.mBitsPerChannel)-bit")
+                }
+            }
         }
     }
     
-    func updateSampleRate(_ sampleRate: Float64) {
+    func updateSampleRate(_ sampleRate: Float64, bitDepth: UInt32? = nil) {
         self.previousSampleRate = sampleRate
         DispatchQueue.main.async {
             let readableSampleRate = sampleRate / 1000
             self.currentSampleRate = readableSampleRate
+            self.currentBitDepth = bitDepth
             
             let delegate = AppDelegate.instance
-            delegate?.statusItemTitle = String(format: "%.1f kHz", readableSampleRate)
+            
+            // Format the display string with bit depth if available
+            var displayString: String
+            if let bitDepth = bitDepth, bitDepth > 0 {
+                displayString = String(format: "%.1f kHz / %d-bit", readableSampleRate, bitDepth)
+            } else {
+                displayString = String(format: "%.1f kHz", readableSampleRate)
+            }
+            
+            delegate?.statusItemTitle = displayString
+            print("[updateSampleRate] Updated display: \(displayString)")
         }
-        self.runUserScript(sampleRate)
+        self.runUserScript(sampleRate, bitDepth: bitDepth)
     }
     
-    func runUserScript(_ sampleRate: Float64) {
+    func runUserScript(_ sampleRate: Float64, bitDepth: UInt32? = nil) {
         guard let scriptPath = Defaults.shared.shellScriptPath else { return }
         let argumentSampleRate = String(Int(sampleRate))
+        let argumentBitDepth = String(bitDepth ?? 0)
         Task.detached {
             let scriptURL = URL(fileURLWithPath: scriptPath)
             do {
                 let task = try NSUserUnixTask(url: scriptURL)
                 let arguments = [
-                    argumentSampleRate
+                    argumentSampleRate,
+                    argumentBitDepth
                 ]
                 try await task.execute(withArguments: arguments)
+                print("[runUserScript] Script executed with args: \(arguments)")
             }
             catch {
-                print("TASK ERR \(error)")
+                print("[runUserScript] Error: \(error)")
             }
         }
     }
