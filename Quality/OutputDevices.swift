@@ -18,6 +18,8 @@ class OutputDevices: ObservableObject {
     
     private var enableBitDepthDetection = Defaults.shared.userPreferBitDepthDetection
     private var enableBitDepthDetectionCancellable: AnyCancellable?
+    private var useAppleScriptDetection = Defaults.shared.useAppleScriptDetection
+    private var useAppleScriptDetectionCancellable: AnyCancellable?
     
     private let coreAudio = SimplyCoreAudio()
     
@@ -59,6 +61,10 @@ class OutputDevices: ObservableObject {
         enableBitDepthDetectionCancellable = Defaults.shared.$userPreferBitDepthDetection.sink(receiveValue: { newValue in
             self.enableBitDepthDetection = newValue
         })
+        
+        useAppleScriptDetectionCancellable = Defaults.shared.$useAppleScriptDetection.sink(receiveValue: { newValue in
+            self.useAppleScriptDetection = newValue
+        })
 
         
     }
@@ -68,11 +74,14 @@ class OutputDevices: ObservableObject {
         defaultChangesCancellable?.cancel()
         timerCancellable?.cancel()
         enableBitDepthDetectionCancellable?.cancel()
+        useAppleScriptDetectionCancellable?.cancel()
         //timer.upstream.connect().cancel()
     }
     
     func renewTimer() {
-        if timerCancellable != nil { return }
+        timerCancellable?.cancel()
+        timerCancellable = nil
+        timerCalls = 0
         timerCancellable = Timer
             .publish(every: 2, on: .main, in: .default)
             .autoconnect()
@@ -97,8 +106,24 @@ class OutputDevices: ObservableObject {
         self.updateSampleRate(sampleRate)
     }
     
-    func getSampleRateFromAppleScript() -> Double? {
-        let scriptContents = "tell application \"Music\" to get sample rate of current track"
+    func getTrackInfoFromAppleScript() -> CMPlayerStats? {
+        let scriptContents = """
+        tell application "Music"
+            set sr to 0
+            set br to 0
+            set ss to 0
+            try
+                set sr to sample rate of current track
+            end try
+            try
+                set br to bit rate of current track
+            end try
+            try
+                set ss to sample size of current track
+            end try
+            return (sr as text) & "," & (br as text) & "," & (ss as text)
+        end tell
+        """
         var error: NSDictionary?
         
         if let script = NSAppleScript(source: scriptContents) {
@@ -106,21 +131,42 @@ class OutputDevices: ObservableObject {
             
             if let error = error {
                 print("[APPLESCRIPT] - \(error)")
-            }
-            guard let output = output else { return nil }
-
-            if output == "missing value" {
                 return nil
             }
-            else {
-                return Double(output)
+            guard let output = output, output != "missing value" else { return nil }
+            
+            let parts = output.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            guard parts.count >= 3,
+                  let sampleRate = Double(parts[0]),
+                  let bitRate = Double(parts[1]),
+                  let sampleSize = Int(parts[2]),
+                  sampleRate > 0 else { return nil }
+            
+            let bitDepth: Int
+            if sampleSize > 0 {
+                bitDepth = sampleSize
+            } else if bitRate > 0 {
+                let computed = (bitRate * 1000) / (sampleRate * 2)
+                bitDepth = computed > 20 ? 24 : 16
+            } else {
+                bitDepth = 16
             }
+            
+            print("[APPLESCRIPT] detected sampleRate=\(sampleRate) bitDepth=\(bitDepth) (sampleSize=\(sampleSize), bitRate=\(bitRate))")
+            return CMPlayerStats(sampleRate: sampleRate, bitDepth: bitDepth, date: Date(), priority: 0)
         }
         
         return nil
     }
     
     func getAllStats() -> [CMPlayerStats] {
+        if useAppleScriptDetection {
+            if let stat = getTrackInfoFromAppleScript() {
+                return [stat]
+            }
+            print("[getAllStats] AppleScript detection failed, falling back to log-based detection")
+        }
+        
         var allStats = [CMPlayerStats]()
         
         do {
@@ -154,12 +200,19 @@ class OutputDevices: ObservableObject {
             let sampleRate = Float64(first.sampleRate)
             let bitDepth = Int32(first.bitDepth)
             
-            if self.currentTrack == self.previousTrack, let prevSampleRate = currentSampleRate, prevSampleRate > sampleRate {
-                print("same track, prev sample rate is higher")
-                return
+            if self.currentTrack == self.previousTrack {
+                if useAppleScriptDetection, let prevSampleRate = currentSampleRate {
+                    if prevSampleRate == Float64(sampleRate / 1000) {
+                        print("same track, same sample rate (AppleScript)")
+                        return
+                    }
+                } else if !useAppleScriptDetection, let prevSR = previousSampleRate, prevSR >= sampleRate {
+                    print("same track, prev sample rate is equal or higher (log-based)")
+                    return
+                }
             }
             
-            if sampleRate == 48000 {
+            if !useAppleScriptDetection && sampleRate == 48000 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
                     self.switchLatestSampleRate(recursion: true)
                 }

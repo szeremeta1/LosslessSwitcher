@@ -13,14 +13,17 @@ class Defaults: ObservableObject {
     private let kSelectedDeviceUID = "com.vincent-neo.LosslessSwitcher-Key-SelectedDeviceUID"
     private let kUserPreferBitDepthDetection = "com.vincent-neo.LosslessSwitcher-Key-BitDepthDetection"
     private let kShellScriptPath = "KeyShellScriptPath"
+    private let kUseAppleScriptDetection = "com.vincent-neo.LosslessSwitcher-Key-AppleScriptDetection"
     
     private init() {
         UserDefaults.standard.register(defaults: [
             kUserPreferIconStatusBarItem : true,
-            kUserPreferBitDepthDetection : false
+            kUserPreferBitDepthDetection : false,
+            kUseAppleScriptDetection : true
         ])
         
         self.userPreferBitDepthDetection = UserDefaults.standard.bool(forKey: kUserPreferBitDepthDetection)
+        self.useAppleScriptDetection = UserDefaults.standard.bool(forKey: kUseAppleScriptDetection)
     }
     
     var userPreferIconStatusBarItem: Bool {
@@ -52,10 +55,17 @@ class Defaults: ObservableObject {
     
     @Published var userPreferBitDepthDetection: Bool
     
+    @Published var useAppleScriptDetection: Bool
+    
     
     @MainActor func setPreferBitDepthDetection(newValue: Bool) {
         UserDefaults.standard.set(newValue, forKey: kUserPreferBitDepthDetection)
         self.userPreferBitDepthDetection = newValue
+    }
+    
+    @MainActor func setUseAppleScriptDetection(newValue: Bool) {
+        UserDefaults.standard.set(newValue, forKey: kUseAppleScriptDetection)
+        self.useAppleScriptDetection = newValue
     }
 
     var statusBarItemTitle: String {
