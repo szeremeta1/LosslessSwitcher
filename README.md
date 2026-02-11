@@ -13,15 +13,6 @@ The opposite happens, when the next track happens to have a lower sample rate.
 
 ## Installation
 
-### For macOS Big Sur 11.4 to macOS Sonoma 14.x
-Please use releases of version 1.x, such as versions 1.0, 1.1 or [1.1.1 betas](https://github.com/vincentneo/LosslessSwitcher/releases/tag/1.1.1-beta2).
-Version 1.x also works up to macOS Sequoia 15.3.1.
-
-You can find the latest stable release of the version 1.x branch here: [Link to v1.1](https://github.com/vincentneo/LosslessSwitcher/releases/tag/1.1.0)
-
-### For macOS Sequoia 15.4 onwards
-Support for this is still in beta. You can try the latest version 2.0 beta here: [Link to v2.0 Beta 1](https://github.com/vincentneo/LosslessSwitcher/releases/tag/2.0-beta1) 
-
 #### Steps
 1. Download the `.zip` file of the preferred version.
 2. Drag the app to your Applications folder.
@@ -51,12 +42,6 @@ Do also note that:
 - Prolonged use on MacBooks may accelerate battery usages, due to the frequent querying of the latest sample rate.
 
 Bit Depth switching is also supported, although, enabling it will reduce detection accuracy, hence, it is not recommended.
-
-### Why make this?
-Ever since Apple Music Lossless launched along with macOS 11.4, the app would never switch the sample rates according to the song that was playing. A trip down to the Audio MIDI Setup app was required.
-This still happens today, with macOS 12.3.1, despite iOS's Music app having such an ability.
-
-I think this improvement might be well appreciated by many, hence this project is here, free and open source.
 
 ## Prerequisites
 Due to how the app works, this app is not, and cannot be sandboxed.
