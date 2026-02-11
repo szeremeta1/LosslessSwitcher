@@ -83,6 +83,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(enableBitDepthItem)
         enableBitDepthItem.state = defaults.userPreferBitDepthDetection ? .on : .off
         
+        let enableAppleScriptItem = NSMenuItem(title: "Use AppleScript Detection", action: #selector(toggleAppleScriptDetection(item:)), keyEquivalent: "")
+        menu.addItem(enableAppleScriptItem)
+        enableAppleScriptItem.state = defaults.useAppleScriptDetection ? .on : .off
+        
         let selectedDeviceItem = NSMenuItem(title: "Selected Device", action: nil, keyEquivalent: "")
         self.devicesMenu = NSMenu()
         selectedDeviceItem.submenu = self.devicesMenu
@@ -94,10 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let aboutItem = NSMenuItem(title: "About", action: nil, keyEquivalent: "")
         let versionItem = NSMenuItem(title: "Version - \(currentVersion)", action: nil, keyEquivalent: "")
         let buildItem = NSMenuItem(title: "Build - \(currentBuild)", action: nil, keyEquivalent: "")
+        let editionItem = NSMenuItem(title: "Szeremeta Edition", action: nil, keyEquivalent: "")
         
         aboutItem.submenu = NSMenu()
         aboutItem.submenu?.addItem(versionItem)
         aboutItem.submenu?.addItem(buildItem)
+        aboutItem.submenu?.addItem(editionItem)
         menu.addItem(aboutItem)
         
         let scriptMenu = NSMenuItem(title: "Scripting", action: nil, keyEquivalent: "")
@@ -187,6 +193,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             await defaults.setPreferBitDepthDetection(newValue: !defaults.userPreferBitDepthDetection)
             item.state = defaults.userPreferBitDepthDetection ? .on : .off
+        }
+    }
+    
+    @objc func toggleAppleScriptDetection(item: NSMenuItem) {
+        Task {
+            await defaults.setUseAppleScriptDetection(newValue: !defaults.useAppleScriptDetection)
+            item.state = defaults.useAppleScriptDetection ? .on : .off
         }
     }
     

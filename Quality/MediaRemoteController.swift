@@ -33,8 +33,8 @@ class MediaRemoteController {
                                 outputDevices.currentTrack = currentTrack
                                 if outputDevices.previousTrack != outputDevices.currentTrack {
                                     outputDevices.renewTimer()
+                                    outputDevices.switchLatestSampleRate()
                                 }
-                                outputDevices.switchLatestSampleRate()
                             }
 //                            if currentTrack != self.previousTrack {
 //                                self.send(command: MRMediaRemoteCommandPause, ifBundleMatches: kMusicAppBundle) {
